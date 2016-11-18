@@ -1,0 +1,444 @@
+---
+title: "cowsummary"
+output: html_document
+---
+
+
+```{r echo=FALSE}
+library(miscTools)
+plants = read.csv('~/Dropbox/2016_field_season/Master/mini_foraging_201516.csv', header = TRUE)
+plants[,15] = paste(plants$Video, plants$V.date)
+colnames(plants)[15] = "name"
+pl.vid = plants$name
+vids = unique(plants$name) # number of plots
+sp.pp = sort(table(pl.vid), decreasing = TRUE) # this gives the number of species per plot
+hist(sp.pp, breaks = "FD")
+abline(v = median(sp.pp), lwd = 2, col = "red") # median number of species per plot
+
+
+
+
+# how many in 2015 and 2016?
+plots.15 = plants[1:271,]
+length(unique(paste(plots.15$Video, plots.15$Species.eat)))
+plots.16 = plants[272:1220,]
+length(unique(paste(plots.16$Video, plots.16$Species.eat)))
+
+
+##################### EATEN PLANTS ########################
+# cow.plants gives a list of plants eaten (165, one for each plot)
+cow.plants = rep(NA, length(vids))
+for (ii in 1:length(vids)){
+cow.plants[ii] = as.character(unique(subset(plants, name == vids[ii], select = Species.eat))$Species.eat)
+}
+
+###################### PLOT PLANTS ##########################
+# expand the data frame
+plot.plants = data.frame(plants$Sci.name, plants$Number.total, plants$name)
+colnames(plot.plants) = c("species", "count", "name")
+
+# pp.long: expanded mini plot species 
+# name.long: does the same for plot name, so I can subset and bootstrap by plot later
+
+pp.long = rep(as.character(plot.plants$species[1]), plot.plants$count[1])
+name.long = rep(as.character(plot.plants$name[1]), plot.plants$count[1])
+# for loop reps name in species by # in count
+for (ii in 2:length(plot.plants$species)){
+  long = rep(as.character(plot.plants$species[ii]), plot.plants$count[ii])
+  n.long = rep(as.character(plot.plants$name[ii]), plot.plants$count[ii])
+  pp.long = append(pp.long, long)
+  name.long = append(name.long, n.long)
+}
+
+boot.by.plot = data.frame(pp.long, name.long)
+names(boot.by.plot) = c("spp", "name")
+
+sum(plot.plants$count)
+
+sort(table(pp.long), decreasing = TRUE)
+
+################################### data clean up ##################################
+obs.table = sort(table(pp.long), decreasing = TRUE)
+eaten.table = sort(table(cow.plants), decreasing = TRUE)
+
+hist(obs.table, breaks = 1:length(pp.long))
+hist(eaten.table, breaks = 1:length(cow.plants))
+
+```
+
+
+The observed species database has `r length(obs.table)` species, and the eaten database has `r length(eaten.table)`.  For my analyses, I'll first focus on just the species that occur in both the observed and eaten database.   
+
+```{r echo=FALSE}
+# which species occur in both the eaten and observed databases?
+un.pp = sort(unique(pp.long))
+un.cow = sort(unique(cow.plants))
+#both = un.cow[which(un.cow %in% un.pp)]
+both = un.cow
+
+```
+
+Question
+How different from random is cow choice for an eaten tree species?
+
+For each species:
++ calculate frequency in eaten database
++ calculate frequency in observed database
++ bootstrap frequencies in both databases
++ calculate mean frequencies from bootstrap output
++ compare with two box t test, KL
+
+```{r echo=FALSE}
+# start with histograms of species occuring in both 
+
+obs.both = obs.table[both]/length(pp.long)
+new.order = order(obs.both, decreasing = TRUE)
+obs.both = obs.both[new.order]
+eaten.both = eaten.table[both]/length(cow.plants)
+eaten.both = eaten.both[new.order]
+
+pp.order = order(table(pp.long), decreasing = TRUE)
+
+```
+`r length(eaten.table)` species shared between observed and eaten databases, in decreasing order of abundance (observed)
+
+
+The bootstrap
+Draw sample populations from cow.sps and pp.long
+```{r echo=FALSE, cache=TRUE}
+# this function returns the shared species
+deals = 10000
+bootmedian = matrix(NA, nrow = deals, ncol = length(both))
+boot.fun = function(dataset){
+  for (ii in 1:deals) {
+  bootdata = sample(dataset, length(dataset), replace = TRUE)
+  boot.table = table(bootdata)
+  both.boot = boot.table[both]/length(bootdata)
+  bootmedian[ii,] = both.boot[new.order]
+  bootmedian[is.na(bootmedian)] = 0
+}
+return(bootmedian)
+}
+
+# run bootstrap algorithm
+eat.boot = boot.fun(cow.plants)
+obs.boot = boot.fun(pp.long)
+
+# this function calculates medians and confidence intervals
+central = function(test, both){
+  meds = rep(NA, length(both))
+  up.cis = rep(NA, length(both))
+  low.cis = rep(NA, length(both))
+  for (ii in 1:length(meds)){
+    meds[ii] = median(test[,ii])
+    low.cis[ii] = sort(test[,ii])[.025*deals]
+    up.cis[ii] = sort(test[,ii])[.975*deals]
+  }
+  return(list(meds, low.cis, up.cis))
+}
+central.eat = central(eat.boot, both)
+central.obs = central(obs.boot, both)
+```
+
+```{r echo=FALSE}
+### compute the KL divergence between histograms
+# chi2 function.  expected values are observed means (from central.obs[[1]])
+
+get.chi2 = function(obs, statistic = "KL"){
+  expect = central.obs[[1]]
+  if(statistic == "chi.sq"){chi.stat = sum(((obs-expect)^2) / expect)} # chi2
+  if(statistic == "chi.abs"){chi.stat = sum(abs(obs-expect) / expect)} # chi abs
+  if(statistic == "KL"){chi.stat = 2 * sum(expect * log(expect / obs))} # 2 * KL
+  return(chi.stat)
+}
+
+# this is the "eaten" statistic
+eaten.KL = get.chi2(central.eat[[1]])
+
+# bootstrapped plot data KLs
+kls = apply(obs.boot, 1, get.chi2)
+kls[is.infinite(kls)] = NA
+kls = kls[!is.na(kls)]
+kls = kls[kls >= 0]
+
+# bootstrapped eaten data KLs
+kls.eat = apply(eat.boot, 1, get.chi2)
+kls.eat[is.infinite(kls.eat)] = NA
+kls.eat = kls.eat[!is.na(kls.eat)]
+
+
+hist(kls, breaks = "FD", xlim = c(0, .08), freq = FALSE)
+abline(v = eaten.KL, col = "red")
+
+
+# bootstrap a distribution of KL stats:
+# kls = rep(NA, 100)
+# for (ii in 1:100){
+#   meds = colMedians(boot.fun(cow.sps))
+#   kls[ii] = get.chi2(meds, "KL")
+# }
+
+### PROBLEM IS IN THE BOOTSTRAP FUNCTION
+
+# one = sample(cow.sps, length(cow.sps), replace = TRUE)
+# t.one = table(one); t.one
+# t.one = t.one[both]/length(one); t.one
+# t.one[is.na(t.one)]=0
+# t.one[new.order]
+```
+This is a bootstrapped null distribution of Kullback-Leibler values for frequencies of plants from census plots, with the experimental (eaten) KL in red.  Zeros in frequency vectors generate infinite values in the matrix of KL divergences- I converted them to zeroes.  
+
+```{r echo=FALSE}
+x.labs = both[new.order]
+xx = 1:length(both)
+par(mar = c(7,3,2,2))
+plot(xx, central.eat[[1]], ylim = c(0, max(central.eat[[3]])), pch = 19, las = 2, xaxt = "n", ann = FALSE)
+axis(1, xx, labels = FALSE)
+#axis(1, xx, x.labs, las = 2, cex.axis = .7)
+text(xx, par("usr")[3] - .01, labels = x.labs, cex = .65, srt = 60, adj = 1, xpd = TRUE)
+
+segments(x0 = xx, y0 = central.eat[[2]], x1 = xx, y1 = central.eat[[3]], lwd = 2)
+segments(x0 = xx-.1, y0 = central.eat[[2]], x1 = xx+.1, lwd = 2)
+segments(x0 = xx-.1, y0 = central.eat[[3]], x1 = xx+.1, lwd = 2)
+
+xx2 = 1:length(both)+.05
+points(xx2, central.obs[[1]], pch = 19, col = "blue")
+segments(x0 = xx2, y0 = central.obs[[2]], x1 = xx2, y1 = central.obs[[3]], col = 'blue', lwd = 2)
+segments(x0 = xx2-.1, y0 = central.obs[[2]], x1 = xx2+.1, col = 'blue', lwd = 2)
+segments(x0 = xx2-.1, y0 = central.obs[[3]], x1 = xx2+.1, col = 'blue', lwd = 2)
+legend(25, .25, c("Observed", "Eaten"), pch = 19, col = c("blue", "black"), bty = "n")
+
+
+```
+This figure shows the rank and frequency of `r length(x.labs)` common Sonoran tropical dry forest tree species (in blue), with confidence intervals. In black, the frequencies of the same species as they occur in cattle diets. Most browsing frequencies are indistinguishable statistically from their distributions in the environment; that is, the frequency of cattle browsing on many tree species is consistent with the frequency by which the trees occur in nature. Some species, however, show a signal of avoidance- they are less frequent in cow diets than would be expected by their frequency of occurence in the forest. Only one species (Haematoxylum brasiletto) occurs more frequently in cow diets than predicted by their abundance in nature.  
+
+
+
+
+
+
+Surprisals.  Here, I calculate the surprisal value in bits for plots where the plant eaten matches some plant in the census plot.  
+```{r echo=FALSE}
+#################### surprisal ################
+### plot.trees are all unique videos in which cows are eating trees
+### cow.plants are all unique tree species eaten by cows
+
+plot.trees = unique(plants$name)
+
+# data frame of plots with species, video/plot name, the probability of selecting the species, and bits 
+# SURPRISE IS EATEN PROBS FOR EACH INDIVIDUAL PLOT / FEEDING EVENT
+surprise = data.frame(cow.plants, plot.trees, NA, NA)
+colnames(surprise) = c("species", "video", "prob", "bits")
+for(ii in 1:length(plot.trees)){
+  surprise$prob[ii] = as.numeric(subset(subset(plants, name == plot.trees[ii]), Sci.name == cow.plants[ii], select = Number.total) / sum(subset(plants, name == plot.trees[ii], select = Number.total)))
+  surprise$bits[ii] = log2(1/surprise$prob[ii])
+}
+
+
+
+# for (ii in 1:length(un.cow)){
+# sboot[[ii]] = subset(surprise, species == un.cow[ii], select = prob)
+# }
+# names(sboot) = un.cow
+
+           
+# this is the same thing, but by species instead of by plot, taking the mean probability per species
+# SMEANS IS THE EATEN PROBS FOR EACH SPECIES
+# How likely was it for an individual of a certain species to be selected?
+# 
+
+
+smeans = data.frame(un.cow, NA, NA, NA)
+colnames(smeans) = c("species", "n.plots", "prob", "bits")
+for (ii in 1:length(un.cow)){
+  vals = as.numeric(as.matrix(subset(surprise, species == un.cow[ii], select = prob)))
+  smeans[ii,2] = nrow(subset(surprise, species == un.cow[ii]))
+  smeans[ii,3] = sum(vals) / length(vals)
+  smeans[ii,4] = log2(1/smeans[ii,3])
+}
+
+as.numeric(as.matrix(subset(surprise, species == un.cow[2], select = prob)))
+
+########## this is the old plot, plotting smeans and obs.by.probs
+par(mar = c(7,3,2,2))
+xax = 1:length(obs.by.probs$un.cow)
+plot(xax, obs.by.probs$bits, ylim = c(0, max(obs.by.probs$bits)), xaxt = "n", ann = FALSE, pch = 19, col = "blue")
+axis(1, xax, labels = FALSE)
+text(xax, par("usr")[3] - .3, labels = obs.by.probs$un.cow, cex = .65, srt = 60, adj = 1, xpd = TRUE)
+
+xax2 = 1:length(smeans$species)+.05
+points(xax2, smeans$bits, xaxt = "n", ann = FALSE, pch = 19)
+
+#############################
+####### probabilities of selecting a species based on environment
+## How frequent is a species in the feeding environment?
+# tHIS IS FOR THE WHOLE ENVIRONMENT. NOT PLOT BASED. don't use.
+
+# obs.table = obs.table[order(names(obs.table))]
+# plant.probs = data.frame(un.cow)
+# probs = rep(NA, length(obs.table))
+# nums = which(names(obs.table) %in% un.cow)
+# for (ii in 1:length(obs.table)){
+#   probs[ii] = obs.table[ii]/sum(obs.table)
+#   plant.probs$prob = probs[nums] 
+#   plant.probs$bits = log2(1/plant.probs$prob)
+# }
+# colnames(plant.probs) = c("species", "prob", "bits")
+
+
+#### Plot-based weighted species probabilities.  
+## this code cycles through each species in each plot, calculates the frequency and bits of data for each species, and puts them all in a list
+
+obs.by.plot = list()
+for (jj in 1:length(plot.trees)){
+  obs.by.plot[[jj]] = data.frame(subset(plants, name == plot.trees[jj], select = Sci.name))
+
+    for (ii in 1:length(subset(plants, name == plot.trees[jj])[,1])){
+    obs.by.plot[[jj]]$prob[ii] = as.numeric(subset(plants, name == plot.trees[jj])[ii,]$Number.total / sum(subset(plants, name == plot.trees[jj], select = Number.total)))
+    obs.by.plot[[jj]]$bits[ii] = log2(1/obs.by.plot[[jj]]$prob[ii])
+    }
+}  
+
+
+
+# now, average all weighted probabilities by species.  basically, if a species occurred in a plot, it gets a probability of being selected by a cow.  here, I aggregate all those probabilities
+
+# obs.for.boot = list() # these are the frequencies of each species for all the plots within which they occur.  so, length(obs.for.boot$Zanthoxylum_fagara) for example is the number of plots where Z. fagara occurred.  
+# obs.by.probs = data.frame(un.cow, prob = NA, bits = NA) # this is the average for all plots where each species occurred.
+# for (jj in 1:length(un.cow)){
+#   test = list()
+#   for (ii in 1:length(obs.by.plot)){
+#     test[[ii]] = subset(obs.by.plot[[ii]], obs.by.plot[[ii]]$Sci.name == un.cow[jj])$prob
+#   }
+#   obs.for.boot[[jj]] = as.numeric(test[which(test > 0)])
+#   obs.by.probs$prob[jj] = sum(as.numeric(test[which(test > 0)])) / length(test) ## SHOULD I DIVIDE BY ALL PLOTS?  OR JUST THE ONES IN WHICH THE SPECIES OCCURRED?
+#   obs.by.probs$bits[jj] = log2(1/obs.by.probs$prob[jj])
+# }
+# names(obs.for.boot) = un.cow
+
+ords = order(obs.by.probs[,3])
+obs.by.probs = obs.by.probs[ords,]
+smeans = smeans[ords,]
+
+
+####################### bootstrap confidence intervals #######
+#### for eaten: sboot
+#### for observed: obs.for.boot
+
+######################## eaten bootstrap.  ################
+# deals = 10000
+# bootmedian = list()
+# for(jj in 1:length(sboot)){
+# for (ii in 1:deals){
+#   bootdata[ii] = median(sample(sboot[[jj]]$prob, length(sboot[[jj]]$prob), replace = TRUE))
+# }
+#   bootmedian[[jj]] = bootdata
+# }
+# 
+# # bootstrapped median values and confidence intervals
+# boot.eat.data = data.frame(un.cow)
+# for (ii in 1:length(bootmedian)){
+# boot.eat.data$median[ii] = median(bootmedian[[ii]])
+# boot.eat.data$low[ii] = sort(bootmedian[[ii]])[.025*deals]
+# boot.eat.data$high[ii] = sort(bootmedian[[ii]])[.975*deals]
+# }
+# 
+# boot.eat.data = boot.eat.data[order(boot.eat.data$med, decreasing = TRUE),]
+
+##################### observed bootstrap #####################
+## bootstrap individuals in boot.by.plot, and come up with a bootstrapped median frequency for each species, with CIs. 
+
+## BOOT.OBS WORKS
+
+boot.obs = list()
+for (jj in 1:length(plot.trees)){
+table = table(as.character(sample(subset(boot.by.plot, name == plot.trees[jj], select = spp)$spp, replace = TRUE))) 
+boot.obs[[jj]] = table/sum(table)
+}
+
+
+
+means.boot = list()
+for (jj in 1:length(un.cow)){
+  for (ii in 1:length(plot.trees)){
+  means.boot[[jj]] = subset(boot.obs[[ii]], names(boot.obs[[ii]]) == un.cow[jj])
+}
+}
+
+
+test.aca = data.frame(rep(NA, 165))
+for (ii in 1:length(plot.trees)){
+test.aca[,1] = as.vector(subset(boot.obs[[ii]], names(boot.obs[[ii]]) == un.cow[1]))
+}
+
+
+
+
+test.aca = data.frame(rep(NA, 165))
+test.aca[1] = subset(boot.obs[[1]], names(boot.obs[[1]]) == un.cow[1])
+
+
+which(names(boot.obs[[1]]) == un.cow[1])
+
+
+
+
+
+
+boot.obs = list()
+for(jj in 1:length(obs.for.boot)){
+for (ii in 1:deals){
+  bootdata[ii] = median(sample(obs.for.boot[[jj]], length(sboot[[jj]]), replace = TRUE))
+}
+  boot.obs[[jj]] = bootdata
+}
+
+
+# bootstrapped median values and confidence intervals
+boot.obs.data = data.frame(un.cow)
+for (ii in 1:length(boot.obs)){
+boot.obs.data$median[ii] = median(boot.obs[[ii]])
+boot.obs.data$low[ii] = sort(boot.obs[[ii]])[.025*deals]
+boot.obs.data$high[ii] = sort(boot.obs[[ii]])[.975*deals]
+}
+
+## sort medians 
+neword = order(boot.obs.data$median, decreasing = TRUE)
+boot.obs.data = boot.obs.data[neword,]
+boot.eat.data = boot.eat.data[neword,]
+##############################################
+
+
+########## this is the new plot, bootstrapped eaten and observed means with CIs
+par(mar = c(7,3,2,2))
+xax = 1:36
+plot(xax, boot.obs.data$median, ylim = c(0, 1), xaxt = "n", ann = FALSE, pch = 19, col = "blue")
+axis(1, xax, labels = FALSE)
+text(xax, par("usr")[3] - .06, labels = boot.obs.data$un.cow, cex = .65, srt = 60, adj = 1, xpd = TRUE)
+
+segments(x0 = xax, y0 = boot.obs.data$low, x1 = xax, y1 = boot.obs.data$high, lwd = 2, col = "blue")
+segments(x0 = xax-.1, y0 = boot.obs.data$low, x1 = xax+.1, lwd = 2, col = "blue")
+segments(x0 = xax-.1, y0 = boot.obs.data$high, x1 = xax+.1, lwd = 2, col = "blue")
+
+xax2 = 1:36+.08
+points(xax2, boot.eat.data$median, xaxt = "n", ann = FALSE, pch = 19)
+
+segments(x0 = xax2, y0 = boot.eat.data$low, x1 = xax2, y1 = boot.obs.data$high, lwd = 2)
+segments(x0 = xax2-.1, y0 = boot.eat.data$low, x1 = xax2+.1, lwd = 2)
+segments(x0 = xax2-.1, y0 = boot.eat.data$high, x1 = xax2+.1, lwd = 2)
+
+
+
+
+
+
+
+
+##  How patchy is the feeding environment?
+## compare: weighted surprisals for species in feeding plots to surprisal values of individuals selected by cows, aggregated by species
+
+
+
+```
+
+
